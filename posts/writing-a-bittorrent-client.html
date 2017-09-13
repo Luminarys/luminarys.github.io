@@ -63,15 +63,16 @@ code > span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Inf
 <li>This process repeats, with 80 KiB of data transferred every 40 ms.</li>
 </ul>
 <p>You can see that even in this rather optimistic scenario, the client's connection is far from being used optimally. In fact, it's an order of magnitude less than what it could be, around 2 MiB/s.</p>
-<p>To make full use of a seeder's connection, adaptive queuing has to be used. For instance, rtorrent makes use of this algorithm when aggresively requesting pieces:</p>
+<p>To make full use of a seeder's connection, adaptive queuing has to be used. The general idea behind this is to gradually increase the number of requests queued for a peer until the download speed is saturated, or the peer can no longer fulfill all the requests in a timely rate. Many clients keep pipelines of hundreds of requests in order to make full use of the connection, and synapse is no exception.</p>
+<p>For instance, rtorrent makes use of this algorithm when aggresively requesting pieces:</p>
 <div class="sourceCode"><pre class="sourceCode c++"><code class="sourceCode cpp"><span class="cf">if</span> (rate &lt; <span class="dv">20</span>)
     <span class="cf">return</span> rate + <span class="dv">2</span>;
 <span class="cf">else</span>
     <span class="cf">return</span> rate / <span class="dv">5</span> + <span class="dv">18</span>;</code></pre></div>
-<p>where rate is the peer's download rate in KiB/s. Synapse employs a similar strategy with some additional clamping on the values. This sort of adaptive queuing makes the best use of the connection and means that fewer peers are needed to saturate the bandwith.</p>
+<p>where rate is the peer's download rate in KiB/s, and the return value is the number of requests to keep in the peer's queue. This sort of adaptive queuing makes the best use of the connection and means that fewer peers are needed to maximize download speeds.</p>
 <h3 id="threading">threading</h3>
 <p>As far as I know, most popular bittorrent clients and libraries use a small number of threads. This is for a good reason. Bittorrent clients require lots of shared state between each peer connection to do things like requesting new pieces and recording downloaded ones. An approach of many threads with locks around state is both inefficient and error prone<a href="#fn4" class="footnoteRef" id="fnref4"><sup>4</sup></a>.</p>
-<p>A better approach is to use non blocking connections with appropriate parsers. All connections are managed on a single thread or split across a few as needed. Peer messages can then be processed as event streams, with responses also queued as needed. This keeps state management simple and the client fairly performant.</p>
+<p>A better approach is to use non blocking connections with appropriate parsers. All connections are managed on a single thread or split across a few as needed. Peer messages can then be processed as event streams, with responses also queued as needed. State management like this is simple and the client fairly performant.</p>
 <p>This does leave the question of how disk IO is done, since the main thread has to be non blocking. Clients handle this in a variety of ways. Synapse utilizes a thread which handles disk jobs, performing reads/writes as well as other filesystem related tasks. Other clients use threadpools or mmap based approaches.</p>
 <h3 id="piece-picking">piece picking</h3>
 <p>Arvid Norberg's post on rarest first piece picking<a href="#fn5" class="footnoteRef" id="fnref5"><sup>5</sup></a> is an excellent overview of the process, but there are a few points worth touching on.</p>

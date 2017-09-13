@@ -37,6 +37,12 @@ You can see that even in this rather optimistic scenario, the client's connectio
 used optimally. In fact, it's an order of magnitude less than what it could be, around 2 MiB/s.
 
 To make full use of a seeder's connection, adaptive queuing has to be used.
+The general idea behind this is to gradually increase the number of requests
+queued for a peer until the download speed is saturated, or the peer
+can no longer fulfill all the requests in a timely rate.
+Many clients keep pipelines of hundreds of requests in order to make full use
+of the connection, and synapse is no exception.
+
 For instance, rtorrent makes use of this algorithm when aggresively requesting pieces:
 ```C++
 if (rate < 20)
@@ -44,10 +50,10 @@ if (rate < 20)
 else
     return rate / 5 + 18;
 ```
-where rate is the peer's download rate in KiB/s.
-Synapse employs a similar strategy with some additional clamping
-on the values. This sort of adaptive queuing makes the best use of the connection
-and means that fewer peers are needed to saturate the bandwith.
+where rate is the peer's download rate in KiB/s, and the return value
+is the number of requests to keep in the peer's queue.
+This sort of adaptive queuing makes the best use of the connection
+and means that fewer peers are needed to maximize download speeds.
 
 ### threading
 As far as I know, most popular bittorrent clients and libraries use a small number
@@ -59,7 +65,7 @@ both inefficient and error prone[^4].
 A better approach is to use non blocking connections with appropriate parsers.
 All connections are managed on a single thread or split across a few as needed.
 Peer messages can then be processed as event streams, with responses also queued as needed.
-This keeps state management simple and the client fairly performant.
+State management like this is simple and the client fairly performant.
 
 This does leave the question of how disk IO is done, since the main thread has
 to be non blocking. Clients handle this in a variety of ways. Synapse utilizes
