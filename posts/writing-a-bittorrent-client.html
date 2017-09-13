@@ -1,0 +1,92 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta http-equiv="Content-Style-Type" content="text/css" />
+  <meta name="generator" content="pandoc" />
+  <meta name="author" content="" />
+  <title>writing a bittorrent client</title>
+  <style type="text/css">code{white-space: pre;}</style>
+  <style type="text/css">
+div.sourceCode { overflow-x: auto; }
+table.sourceCode, tr.sourceCode, td.lineNumbers, td.sourceCode {
+  margin: 0; padding: 0; vertical-align: baseline; border: none; }
+table.sourceCode { width: 100%; line-height: 100%; }
+td.lineNumbers { text-align: right; padding-right: 4px; padding-left: 4px; color: #aaaaaa; border-right: 1px solid #aaaaaa; }
+td.sourceCode { padding-left: 5px; }
+code > span.kw { color: #007020; font-weight: bold; } /* Keyword */
+code > span.dt { color: #902000; } /* DataType */
+code > span.dv { color: #40a070; } /* DecVal */
+code > span.bn { color: #40a070; } /* BaseN */
+code > span.fl { color: #40a070; } /* Float */
+code > span.ch { color: #4070a0; } /* Char */
+code > span.st { color: #4070a0; } /* String */
+code > span.co { color: #60a0b0; font-style: italic; } /* Comment */
+code > span.ot { color: #007020; } /* Other */
+code > span.al { color: #ff0000; font-weight: bold; } /* Alert */
+code > span.fu { color: #06287e; } /* Function */
+code > span.er { color: #ff0000; font-weight: bold; } /* Error */
+code > span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+code > span.cn { color: #880000; } /* Constant */
+code > span.sc { color: #4070a0; } /* SpecialChar */
+code > span.vs { color: #4070a0; } /* VerbatimString */
+code > span.ss { color: #bb6688; } /* SpecialString */
+code > span.im { } /* Import */
+code > span.va { color: #19177c; } /* Variable */
+code > span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+code > span.op { color: #666666; } /* Operator */
+code > span.bu { } /* BuiltIn */
+code > span.ex { } /* Extension */
+code > span.pp { color: #bc7a00; } /* Preprocessor */
+code > span.at { color: #7d9029; } /* Attribute */
+code > span.do { color: #ba2121; font-style: italic; } /* Documentation */
+code > span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+code > span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+code > span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+  </style>
+  <link rel="stylesheet" href="../css/pandoc.css" type="text/css" />
+</head>
+<body>
+<div id="header">
+<h1 class="title">writing a bittorrent client</h1>
+<h2 class="author"></h2>
+</div>
+<p>I've been unhappy with the state of bittorrent clients for some time now. Every client I've used has been some combination of glitchy, unintuitive, slow, or hard to setup. Almost all have RPC protocols which are poorly documented, hard to use, or both. It's a fairly frustrating state which I'm trying to remedy (for myself at least).</p>
+<p>For the past 9 months I've been working on a bittorrent client, <a href="https://synapse-bt.org">synapse</a>. Working off of public documentation and other client source code/behavior, synapse has become a fairly usable, though still WIP, client. In the process I've learned a few things which might be of interest to others who want to implement a client themselves, or just want to know more about how clients work. This is only a small portion of the various challenges associated with building a bittorrent client and I strongly recommend reading the libtorrent blog<a href="#fn1" class="footnoteRef" id="fnref1"><sup>1</sup></a> if you'd like to learn more.</p>
+<h3 id="queuing">queuing</h3>
+<p>Most information on the web about request queuing is either wrong, or ambiguous. This is largely because the documents were written 10+ years ago when the average household internet connection was orders of magnitude less than it is now. As the theory page<a href="#fn2" class="footnoteRef" id="fnref2"><sup>2</sup></a> notes, queuing is likely the most important aspect of network performance. Keeping a request queue of 5 pieces is a bad idea for most connections these days. To illustrate, on a 20 Mbps connection, downloading from a client with 40 ms RTT, this will likely happen:</p>
+<ul>
+<li>The client will start by requesting 5 blocks<a href="#fn3" class="footnoteRef" id="fnref3"><sup>3</sup></a>. These will be batched into a single TCP packet and sent.</li>
+<li>20 ms later the seeder receives the request. Assuming it can instantly read the 80 KiB from disk, the blocks are then sent back.</li>
+<li>Another 20 ms later, the client begins receiving the blocks. As it recieves each block, it requests a new block to keep the pipeline at 5 requests.</li>
+<li>Because the 5 blocks are likely received in quick succession, 5 responses will likely be sent again in a batch.</li>
+<li>This process repeats, with 80 KiB of data transferred every 40 ms.</li>
+</ul>
+<p>You can see that even in this rather optimistic scenario, the client's connection is far from being used optimally. In fact, it's an order of magnitude less than what it could be, around 2 MiB/s.</p>
+<p>To make full use of a seeder's connection, adaptive queuing has to be used. For instance, rtorrent makes use of this algorithm when aggresively requesting pieces:</p>
+<div class="sourceCode"><pre class="sourceCode c++"><code class="sourceCode cpp"><span class="cf">if</span> (rate &lt; <span class="dv">20</span>)
+    <span class="cf">return</span> rate + <span class="dv">2</span>;
+<span class="cf">else</span>
+    <span class="cf">return</span> rate / <span class="dv">5</span> + <span class="dv">18</span>;</code></pre></div>
+<p>where rate is the peer's download rate in KiB/s. Synapse employs a similar strategy with some additional clamping on the values. This sort of adaptive queuing makes the best use of the connection and means that fewer peers are needed to saturate the bandwith.</p>
+<h3 id="threading">threading</h3>
+<p>As far as I know, most popular bittorrent clients and libraries use a small number of threads. This is for a good reason. Bittorrent clients require lots of shared state between each peer connection to do things like requesting new pieces and recording downloaded ones. An approach of many threads with locks around state is both inefficient and error prone<a href="#fn4" class="footnoteRef" id="fnref4"><sup>4</sup></a>.</p>
+<p>A better approach is to use non blocking connections with appropriate parsers. All connections are managed on a single thread or split across a few as needed. Peer messages can then be processed as event streams, with responses also queued as needed. This keeps state management simple and the client fairly performant.</p>
+<p>This does leave the question of how disk IO is done, since the main thread has to be non blocking. Clients handle this in a variety of ways. Synapse utilizes a thread which handles disk jobs, performing reads/writes as well as other filesystem related tasks. Other clients use threadpools or mmap based approaches.</p>
+<h3 id="piece-picking">piece picking</h3>
+<p>Arvid Norberg's post on rarest first piece picking<a href="#fn5" class="footnoteRef" id="fnref5"><sup>5</sup></a> is an excellent overview of the process, but there are a few points worth touching on.</p>
+<p>When a piece is succesfully picked, removing it from the picker is fairly expensive and complicated, as every single piece in the ordered list of piece might need to be shifted forward, with all appropriate boundaries and indeces updated. Synapse mitigates this by attaching a flag to each piece which marks it as completed and on completion increments its availability by a large number, shifting it to the end of the vector. This may sound expensive, but it's actually not. Priority levels tend not to be more than 10-20 for most torrents, meaning only a few actual swap operations need to be performed to shift the piece to the back of the vector. This has the additional advantage of making it very easy to &quot;unpick&quot; a piece, which may happen if the piece is invalidated, since it just has to have availability decremented by an equal amount. If it was removed, the entire picker would have to be rebuilt to get the previous priority.</p>
+<p>Another change synapse has made is the separation of piece picking and block picking. The picker in synapse works by specifying the best piece to download from a peer rather than recording the actual blocks picked themselves. A block picker then picks an appropriate block for the peer. This separation of concerns simplifies picker code and makes it easier to test, but also has some significant advantages. For example, when a user swaps pickers or updates a file priority, the new picker can be rebuilt from scratch while maintaining the current state of downloading blocks independently.</p>
+<div class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><a href="http://blog.libtorrent.org/" class="uri">http://blog.libtorrent.org/</a><a href="#fnref1">↩</a></p></li>
+<li id="fn2"><p><a href="https://wiki.theory.org/index.php/BitTorrentSpecification#Algorithms" class="uri">https://wiki.theory.org/index.php/BitTorrentSpecification#Algorithms</a><a href="#fnref2">↩</a></p></li>
+<li id="fn3"><p>The bittorrent protocol transfers data between clients in &quot;blocks&quot;, which consist of a piece index, offset in the piece, and 16 KiB of data.<a href="#fnref3">↩</a></p></li>
+<li id="fn4"><p><a href="https://monotorrent.blogspot.com/2008/10/monotorrent-050-good-bad-and-seriously.html" class="uri">https://monotorrent.blogspot.com/2008/10/monotorrent-050-good-bad-and-seriously.html</a><a href="#fnref4">↩</a></p></li>
+<li id="fn5"><p><a href="http://blog.libtorrent.org/2011/11/writing-a-fast-piece-picker" class="uri">http://blog.libtorrent.org/2011/11/writing-a-fast-piece-picker</a><a href="#fnref5">↩</a></p></li>
+</ol>
+</div>
+<a href="../index.html">Home</a>
+</body>
+</html>
