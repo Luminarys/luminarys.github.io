@@ -1,7 +1,7 @@
 % Luminarys
 %
 %
-UW student and developer.
+Bug writer. I occasionaly produce software as well.
 
 ### Posts
 [Sep 2017]{.date} - [writing a bittorrent client](./posts/writing-a-bittorrent-client.html)
